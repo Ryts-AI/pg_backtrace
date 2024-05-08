@@ -21,15 +21,18 @@ void _PG_init(void);
 void _PG_fini(void);
 
 PG_FUNCTION_INFO_V1(pg_backtrace_init);
-PG_FUNCTION_INFO_V1(pg_backtrace_sigsegv);
 
-static int backtrace_level = ERROR;
+/* Disabled for user safety */
+/* PG_FUNCTION_INFO_V1(pg_backtrace_force_crash); */
+
+static int backtrace_level = FATAL;
 static ErrorContextCallback backtrace_callback;
 static ExecutorRun_hook_type prev_executor_run_hook;
 static ProcessUtility_hook_type prev_utility_hook;
 static post_parse_analyze_hook_type prev_post_parse_analyze_hook;
-static bool inside_signal_handler;
+static bool inside_signal_handler = false;
 static pqsigfunc signal_handlers[_NSIG];
+static bool already_printed = false;
 
 static void
 backtrace_dump_stack(void)
@@ -50,9 +53,29 @@ backtrace_dump_stack(void)
 static void
 backtrace_callback_function(void* arg)
 {
-	if (inside_signal_handler || geterrcode() >= backtrace_level)
+	if (inside_signal_handler)
 	{
+		if (already_printed)
+			exit(1);
+
+		already_printed = true;
 		backtrace_dump_stack();
+	}
+	else
+	{
+		MemoryContext oldcontext, tmpcontext;
+		int elevel;
+		ErrorData *edata;
+
+		tmpcontext = AllocSetContextCreate(CurrentMemoryContext, "pg_backtrace temporary context", ALLOCSET_DEFAULT_SIZES);
+		oldcontext = MemoryContextSwitchTo(tmpcontext);
+		edata = CopyErrorData();
+		elevel = edata->elevel;
+		MemoryContextSwitchTo(oldcontext);
+		MemoryContextReset(tmpcontext);
+
+		if (elevel >= backtrace_level)
+			backtrace_dump_stack();
 	}
 }
 
@@ -81,28 +104,28 @@ backtrace_executor_run_hook(QueryDesc *queryDesc,
 		standard_ExecutorRun(queryDesc, direction, count, execute_once);
 }
 
-static void backtrace_utility_hook(PlannedStmt *pstmt,
-								   const char *queryString, ProcessUtilityContext context,
-								   ParamListInfo params,
+static void backtrace_utility_hook(PlannedStmt *pstmt, const char *queryString,
+							bool readOnlyTree, ProcessUtilityContext context,
+							ParamListInfo params,
 								   QueryEnvironment *queryEnv,
-								   DestReceiver *dest, char *completionTag)
+								   DestReceiver *dest, QueryCompletion *completionTag)
 {
 	backtrace_register_error_callback();
 	if (prev_utility_hook)
-		(*prev_utility_hook)(pstmt, queryString,
+		(*prev_utility_hook)(pstmt, queryString, readOnlyTree,
 							 context, params, queryEnv,
 							 dest, completionTag);
 	else
-		standard_ProcessUtility(pstmt, queryString,
+		standard_ProcessUtility(pstmt, queryString, readOnlyTree,
 								context, params, queryEnv,
 								dest, completionTag);
 }
 
-static void backtrace_post_parse_analyze_hook(ParseState *pstate, Query *query)
+static void backtrace_post_parse_analyze_hook(ParseState *pstate, Query *query, JumbleState* jstate)
 {
 	backtrace_register_error_callback();
 	if (prev_post_parse_analyze_hook)
-		prev_post_parse_analyze_hook(pstate, query);
+		prev_post_parse_analyze_hook(pstate, query, jstate);
 }
 
 
@@ -112,8 +135,10 @@ backtrace_handler(SIGNAL_ARGS)
 	inside_signal_handler = true;
 	elog(LOG, "Caught signal %d", postgres_signal_arg);
 	inside_signal_handler = false;
-	if (postgres_signal_arg != SIGINT && signal_handlers[postgres_signal_arg])
+	if (signal_handlers[postgres_signal_arg])
+	{
 		signal_handlers[postgres_signal_arg](postgres_signal_arg);
+	}
 }
 
 static const struct config_enum_entry backtrace_level_options[] =
@@ -125,12 +150,12 @@ static const struct config_enum_entry backtrace_level_options[] =
 	{"debug1", DEBUG1, false},
 	{"debug", DEBUG2, true},
 	{"log", LOG, false},
-	{"info", INFO, true},
+	{"info", INFO, false},
 	{"notice", NOTICE, false},
 	{"warning", WARNING, false},
 	{"error", ERROR, false},
-	{"fatal", FATAL, true},
-	{"panic", PANIC, true},
+	{"fatal", FATAL, false},
+	{"panic", PANIC, false},
 	{NULL, 0, false}
 };
 
@@ -149,11 +174,11 @@ void _PG_init(void)
 	prev_post_parse_analyze_hook = post_parse_analyze_hook;
 	post_parse_analyze_hook = backtrace_post_parse_analyze_hook;
 
-    DefineCustomEnumVariable("pg_backtrace.level",
+	DefineCustomEnumVariable("pg_backtrace.level",
 							 "Set error level for dumping backtrace",
 							 NULL,
 							 &backtrace_level,
-							 ERROR,
+							 FATAL,
 							 backtrace_level_options,
 							 PGC_USERSET, 0, NULL, NULL, NULL);
 }
@@ -171,16 +196,20 @@ void _PG_fini(void)
 }
 
 Datum pg_backtrace_init(PG_FUNCTION_ARGS);
-Datum pg_backtrace_sigsegv(PG_FUNCTION_ARGS);
-
+/* Disabled for user safety */
+/* Datum pg_backtrace_force_crash(PG_FUNCTION_ARGS); */
 
 Datum pg_backtrace_init(PG_FUNCTION_ARGS)
 {
 	PG_RETURN_VOID();
 }
 
-Datum pg_backtrace_sigsegv(PG_FUNCTION_ARGS)
+/* Disabled for user safety */
+/*
+Datum pg_backtrace_force_crash(PG_FUNCTION_ARGS)
 {
-	*(int*)0 = 0;
+	volatile int *n = 0;
+	*n = 0;
 	PG_RETURN_VOID();
 }
+*/
