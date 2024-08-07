@@ -31,6 +31,10 @@ static ExecutorRun_hook_type prev_executor_run_hook;
 static ProcessUtility_hook_type prev_utility_hook;
 static post_parse_analyze_hook_type prev_post_parse_analyze_hook;
 static bool inside_signal_handler = false;
+
+#if !defined(_ANSI_SOURCE) && (!defined(_POSIX_C_SOURCE) || defined(_DARWIN_C_SOURCE))
+#define _NSIG __DARWIN_NSIG
+#endif
 static pqsigfunc signal_handlers[_NSIG];
 static bool already_printed = false;
 
